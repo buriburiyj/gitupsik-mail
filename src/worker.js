@@ -615,8 +615,9 @@ export default {
     if (url.pathname === "/setacademy" && request.method === "POST") {
       try {
         const body = await request.json();
-        const { email, academies } = body;
-        if (!email) return json({ ok:false, msg:"이메일이 필요해." }, cors);
+        const { academies } = body;
+        const email = await getSessionEmail(request, env);
+        if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
         const existing = await env.SUBS.get(email);
         if (!existing) return json({ ok:false, msg:"먼저 학교를 구독해줘!" }, cors);
         const sub = JSON.parse(existing);
@@ -628,8 +629,8 @@ export default {
     }
 
     if (url.pathname === "/getacademy") {
-      const email = url.searchParams.get("email");
-      if (!email) return json({ ok:false, msg:"이메일이 필요해." }, cors);
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
       const existing = await env.SUBS.get(email);
       if (!existing) return json({ ok:true, academies: [] }, cors);
       const sub = JSON.parse(existing);
@@ -639,8 +640,9 @@ export default {
         if (url.pathname === "/setdday" && request.method === "POST") {
       try {
         const body = await request.json();
-        const { email, ddays } = body;
-        if (!email) return json({ ok:false, msg:"이메일이 필요해." }, cors);
+        const { ddays } = body;
+        const email = await getSessionEmail(request, env);
+        if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
         const existing = await env.SUBS.get(email);
         if (!existing) return json({ ok:false, msg:"먼저 학교를 구독해줘!" }, cors);
         const sub = JSON.parse(existing);
@@ -652,8 +654,8 @@ export default {
     }
 
     if (url.pathname === "/getdday") {
-      const email = url.searchParams.get("email");
-      if (!email) return json({ ok:false, msg:"이메일이 필요해." }, cors);
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
       const existing = await env.SUBS.get(email);
       if (!existing) return json({ ok:true, ddays: [] }, cors);
       const sub = JSON.parse(existing);

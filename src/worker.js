@@ -4,6 +4,9 @@
 // ===================================================================
 const NEIS_BASE = "https://open.neis.go.kr/hub";
 const WORKER_URL = "https://gitupsik-mail.buriburiyejun.workers.dev";
+const FRONTEND_URL = "https://todaymealmy.netlify.app";
+const LOGIN_TOKEN_TTL = 600;    // 로그인 링크 토큰: 10분
+const SESSION_TTL = 604800;     // 로그인 세션: 7일
 
 const CHEERS = [
   "오늘도 니 페이스대로, 화이팅! 🔥",
@@ -31,6 +34,18 @@ function todayDow() { return kstNow().getUTCDay(); }
 
 function makeToken() {
   return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
+}
+
+// 로그인/세션 토큰용: 예측 불가능한 암호학적 난수 (makeToken()과 달리 위조되면 안 되는 값에 사용)
+function secureToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// 간단한 안내 문구를 보여주는 HTML 페이지 (예: /verify, /login/verify 결과 화면)
+function htmlWrap(inner) {
+  return `<div style="font-family:-apple-system,'Apple SD Gothic Neo',sans-serif;text-align:center;margin-top:60px;padding:0 20px">${inner}</div>`;
 }
 
 // ===== 급식 =====
@@ -290,8 +305,19 @@ async function sendNoticeToAll(env, title, body) {
   return count;
 }
 
-function json(obj, cors) {
-  return new Response(JSON.stringify(obj), { headers: { "Content-Type": "application/json; charset=utf-8", ...cors } });
+function json(obj, cors, status = 200) {
+  return new Response(JSON.stringify(obj), { status, headers: { "Content-Type": "application/json; charset=utf-8", ...cors } });
+}
+
+// 요청의 Authorization: Bearer <세션토큰> 헤더로 로그인한 사람의 email을 알아낸다.
+// 클라이언트가 보낸 email 파라미터는 신뢰하지 않고, 세션 토큰으로만 신원을 판단한다.
+async function getSessionEmail(request, env) {
+  const auth = request.headers.get("Authorization") || "";
+  const match = auth.match(/^Bearer (.+)$/);
+  if (!match) return null;
+  const data = await env.SUBS.get(`session:${match[1]}`);
+  if (!data) return null;
+  try { return JSON.parse(data).email; } catch (e) { return null; }
 }
 
 export default {
@@ -300,7 +326,7 @@ export default {
     const cors = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
+      "Access-Control-Allow-Headers": "Content-Type, Authorization"
     };
     if (request.method === "OPTIONS") return new Response(null, { headers: cors });
 
@@ -521,16 +547,69 @@ export default {
     if (url.pathname === "/verify") {
       const email = url.searchParams.get("email");
       const token = url.searchParams.get("token");
-      const wrap = (inner) => `<div style="font-family:-apple-system,'Apple SD Gothic Neo',sans-serif;text-align:center;margin-top:60px;padding:0 20px">${inner}</div>`;
       const data = email ? await env.SUBS.get(email) : null;
-      if (!data) return new Response(wrap("<h2>❌ 구독 정보를 찾을 수 없어요</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+      if (!data) return new Response(htmlWrap("<h2>❌ 구독 정보를 찾을 수 없어요</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
       const rec = JSON.parse(data);
-      if (rec.verified) return new Response(wrap("<h2>✅ 이미 인증된 계정이에요!</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
-      if (rec.token !== token) return new Response(wrap("<h2>❌ 인증 코드가 올바르지 않아요</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+      if (rec.verified) return new Response(htmlWrap("<h2>✅ 이미 인증된 계정이에요!</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+      if (rec.token !== token) return new Response(htmlWrap("<h2>❌ 인증 코드가 올바르지 않아요</h2>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
       rec.verified = true;
       delete rec.token;
       await env.SUBS.put(email, JSON.stringify(rec));
-      return new Response(wrap(`<h2>🎉 구독 완료!</h2><p style="color:#475569;font-size:15px">내일 아침 7시부터 <b>${rec.schoolName || "학교"}</b> 브리핑을 받아볼 수 있어요.</p>`), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+      return new Response(htmlWrap(`<h2>🎉 구독 완료!</h2><p style="color:#475569;font-size:15px">내일 아침 7시부터 <b>${rec.schoolName || "학교"}</b> 브리핑을 받아볼 수 있어요.</p>`), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+    }
+
+    // ===== 매직링크 로그인 =====
+    if (url.pathname === "/login/request" && request.method === "POST") {
+      try {
+        const { email } = await request.json();
+        if (!email || !email.includes("@")) return json({ ok:false, msg:"이메일을 제대로 입력해줘!" }, cors);
+
+        const existing = await env.SUBS.get(email);
+        if (existing) {
+          const sub = JSON.parse(existing);
+          if (sub.verified) {
+            const loginToken = secureToken();
+            await env.SUBS.put(`logintoken:${loginToken}`, JSON.stringify({ email }), { expirationTtl: LOGIN_TOKEN_TTL });
+            const loginUrl = `${WORKER_URL}/login/verify?token=${loginToken}`;
+            const html = `
+              <div style="background:#f1f5f9;padding:24px 16px;font-family:-apple-system,'Apple SD Gothic Neo',sans-serif;max-width:480px;margin:0 auto">
+                <div style="background:#fff;border-radius:16px;padding:28px;text-align:center">
+                  <div style="font-size:22px;font-weight:800;color:#4f46e5">🔑 오늘급식 로그인</div>
+                  <p style="color:#475569;font-size:15px;margin:16px 0">아래 버튼을 누르면 로그인돼요.<br>이 링크는 10분 동안, 한 번만 쓸 수 있어요.</p>
+                  <a href="${loginUrl}" style="display:inline-block;margin:8px 0;padding:14px 30px;background:#4f46e5;color:#fff;text-decoration:none;border-radius:12px;font-weight:800;font-size:16px">🔑 로그인하기</a>
+                  <p style="color:#94a3b8;font-size:12px;margin-top:18px">이 로그인을 요청한 적이 없다면 무시하면 돼요.</p>
+                </div>
+              </div>`;
+            await fetch("https://api.resend.com/emails", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: email, subject: "🔑 오늘급식 로그인 링크", html })
+            });
+          }
+        }
+
+        return json({ ok:true, msg:"가입된 이메일이면 로그인 링크를 보냈어! 📩 메일함을 확인해줘 (10분 안에 유효)" }, cors);
+      } catch (e) { return json({ ok:false, msg:"오류: "+e.message }, cors); }
+    }
+
+    if (url.pathname === "/login/verify") {
+      const token = url.searchParams.get("token");
+      const data = token ? await env.SUBS.get(`logintoken:${token}`) : null;
+      if (!data) {
+        return new Response(htmlWrap("<h2>❌ 로그인 링크가 만료됐거나 이미 사용됐어요</h2><p style=\"color:#475569;font-size:15px\">다시 로그인을 요청해줘.</p>"), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
+      }
+      await env.SUBS.delete(`logintoken:${token}`);
+      const { email } = JSON.parse(data);
+      const sessionToken = secureToken();
+      await env.SUBS.put(`session:${sessionToken}`, JSON.stringify({ email }), { expirationTtl: SESSION_TTL });
+      return Response.redirect(`${FRONTEND_URL}/#session=${sessionToken}`, 302);
+    }
+
+    if (url.pathname === "/login/logout" && request.method === "POST") {
+      const auth = request.headers.get("Authorization") || "";
+      const match = auth.match(/^Bearer (.+)$/);
+      if (match) await env.SUBS.delete(`session:${match[1]}`);
+      return json({ ok:true, msg:"로그아웃 됐어!" }, cors);
     }
 
     if (url.pathname === "/setacademy" && request.method === "POST") {

@@ -4,7 +4,7 @@
 // ===================================================================
 const NEIS_BASE = "https://open.neis.go.kr/hub";
 const WORKER_URL = "https://gitupsik-mail.buriburiyejun.workers.dev";
-const FRONTEND_URL = "https://todaymealmy.netlify.app";
+const FRONTEND_URL = "https://today-meal.buriburiyejun.workers.dev";
 const LOGIN_TOKEN_TTL = 600;    // 로그인 링크 토큰: 10분
 const SESSION_TTL = 604800;     // 로그인 세션: 7일
 
@@ -239,7 +239,7 @@ function buildHtml(sub, weather, air, meal, timetable, cheer) {
     (ddayInner ? card("🎯 디데이", ddayInner) : "") +
 
     `<div style="text-align:center;background:#4f46e5;color:#fff;border-radius:16px;padding:16px;font-size:15px;font-weight:600">💬 ${cheer}</div>` +
-    `<div style="text-align:center;margin-top:14px"><a href="https://todaymealmy.netlify.app" style="display:inline-block;padding:13px 28px;background:#fff;color:#4f46e5;text-decoration:none;border-radius:12px;font-weight:800;font-size:15px;border:2px solid #4f46e5">🍚 오늘급식 앱 열기</a></div>` +
+    `<div style="text-align:center;margin-top:14px"><a href="${FRONTEND_URL}" style="display:inline-block;padding:13px 28px;background:#fff;color:#4f46e5;text-decoration:none;border-radius:12px;font-weight:800;font-size:15px;border:2px solid #4f46e5">🍚 오늘급식 앱 열기</a></div>` +
     `<div style="text-align:center;color:#94a3b8;font-size:11px;margin-top:14px">오늘급식 · <a href="${unsubUrl}" style="color:#94a3b8">구독 취소</a></div></div>`;
 }
 // ===== 한 명에게 보내기 =====

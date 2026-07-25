@@ -25,6 +25,11 @@ function todayStr() {
   const d = kstNow();
   return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
 }
+// D1 저장용: todayStr()과 달리 구분자(-)가 있는 YYYY-MM-DD
+function kstDateStr() {
+  const d = kstNow();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
 function dateKorean() {
   const d = kstNow();
   const days = ['일','월','화','수','목','금','토'];
@@ -318,6 +323,28 @@ async function getSessionEmail(request, env) {
   const data = await env.SUBS.get(`session:${match[1]}`);
   if (!data) return null;
   try { return JSON.parse(data).email; } catch (e) { return null; }
+}
+
+// D1의 checkins 기록으로 연속 완료일(스트릭)을 계산.
+// 오늘 체크인이 없으면 어제부터 세기 시작하고, 하루라도 끊기면 그 자리에서 멈춘다.
+async function calcStreakFromD1(email, env) {
+  const { results } = await env.DB.prepare(
+    "SELECT date FROM checkins WHERE email = ? ORDER BY date DESC LIMIT 400"
+  ).bind(email).all();
+  const dates = new Set(results.map(r => r.date));
+  if (dates.size === 0) return 0;
+
+  const cursor = kstNow();
+  if (!dates.has(kstDateStr())) cursor.setUTCDate(cursor.getUTCDate() - 1);
+
+  let streak = 0;
+  while (true) {
+    const key = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth()+1).padStart(2,'0')}-${String(cursor.getUTCDate()).padStart(2,'0')}`;
+    if (!dates.has(key)) break;
+    streak++;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return streak;
 }
 
 export default {
@@ -660,6 +687,26 @@ export default {
       if (!existing) return json({ ok:true, ddays: [] }, cors);
       const sub = JSON.parse(existing);
       return json({ ok:true, ddays: sub.ddays || [] }, cors);
+    }
+
+    // 오늘 학습 항목을 완료했다는 신호만 받고, 스트릭 계산은 서버(D1)가 KST 기준으로 함
+    if (url.pathname === "/checkin" && request.method === "POST") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
+      try {
+        await env.DB.prepare(
+          "INSERT INTO checkins (email, date, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING"
+        ).bind(email, kstDateStr(), Date.now()).run();
+        const streak = await calcStreakFromD1(email, env);
+        return json({ ok:true, streak }, cors);
+      } catch (e) { return json({ ok:false, msg:"오류: "+e.message }, cors); }
+    }
+
+    if (url.pathname === "/streak") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
+      const streak = await calcStreakFromD1(email, env);
+      return json({ ok:true, streak }, cors);
     }
 
     if (url.pathname === "/debug") {

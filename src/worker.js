@@ -347,6 +347,27 @@ async function calcStreakFromD1(email, env) {
   return streak;
 }
 
+// 이메일 하나당 항상 같은 이모지가 나오도록 하는 간단한 고정 해시.
+// 이메일을 역추적할 순 없고, 랭킹 화면에서 같은 표시명(학년+반)이 겹칠 때 줄을 구분하는 용도.
+const RANK_AVATARS = ['🦊','🐻','🐰','🐱','🐶','🐼','🐨','🐯','🦁','🐸','🐵','🦉','🐢','🐙','🦄','🐷'];
+function avatarForEmail(email) {
+  let sum = 0;
+  for (let i = 0; i < email.length; i++) sum += email.charCodeAt(i);
+  return RANK_AVATARS[sum % RANK_AVATARS.length];
+}
+
+// 인증된 사용자의 학교/학년/반 정보를 D1 users 테이블에 동기화 (랭킹 조회용).
+// KV(SUBS)가 원본이고, 이건 랭킹을 학교별로 그룹핑하기 위한 파생 데이터일 뿐이다.
+async function upsertUserProfile(env, { email, officeCode, schoolCode, schoolName, grade, classNm }) {
+  await env.DB.prepare(
+    `INSERT INTO users (email, officeCode, schoolCode, schoolName, grade, classNm, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET
+       officeCode=excluded.officeCode, schoolCode=excluded.schoolCode, schoolName=excluded.schoolName,
+       grade=excluded.grade, classNm=excluded.classNm, updated_at=excluded.updated_at`
+  ).bind(email, officeCode, schoolCode, schoolName, grade, classNm, Date.now()).run();
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -542,6 +563,7 @@ export default {
           if (old.verified) {
             const updated = { ...old, officeCode, schoolCode, schoolName, lat, lon, grade, classNm, verified: true, academies: old.academies || [] };
             await env.SUBS.put(email, JSON.stringify(updated));
+            await upsertUserProfile(env, updated);
             return json({ ok:true, msg:"이미 인증된 계정이라 정보만 업데이트했어! ✅" }, cors);
           }
         }
@@ -582,6 +604,7 @@ export default {
       rec.verified = true;
       delete rec.token;
       await env.SUBS.put(email, JSON.stringify(rec));
+      await upsertUserProfile(env, rec);
       return new Response(htmlWrap(`<h2>🎉 구독 완료!</h2><p style="color:#475569;font-size:15px">내일 아침 7시부터 <b>${rec.schoolName || "학교"}</b> 브리핑을 받아볼 수 있어요.</p>`), { headers:{ "Content-Type":"text/html; charset=utf-8" } });
     }
 
@@ -707,6 +730,44 @@ export default {
       if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
       const streak = await calcStreakFromD1(email, env);
       return json({ ok:true, streak }, cors);
+    }
+
+    // 같은 학교 사용자들의 스트릭 랭킹. 이메일 원문/개인정보는 응답에 절대 포함하지 않는다.
+    if (url.pathname === "/ranking") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
+
+      const me = await env.DB.prepare(
+        "SELECT officeCode, schoolCode, schoolName FROM users WHERE email = ?"
+      ).bind(email).first();
+      if (!me) return json({ ok:false, msg:"학교 정보를 먼저 저장해줘! (재구독하면 반영돼)" }, cors);
+
+      const { results } = await env.DB.prepare(
+        "SELECT email, grade, classNm, nickname FROM users WHERE officeCode = ? AND schoolCode = ? LIMIT 500"
+      ).bind(me.officeCode, me.schoolCode).all();
+
+      const ranked = [];
+      for (const u of results) {
+        const streak = await calcStreakFromD1(u.email, env);
+        if (streak > 0) {
+          ranked.push({
+            email: u.email,
+            display: u.nickname || `${u.grade || "?"}학년 ${u.classNm || "?"}반`,
+            avatar: avatarForEmail(u.email),
+            streak
+          });
+        }
+      }
+      ranked.sort((a, b) => b.streak - a.streak);
+
+      const list = ranked.slice(0, 20).map((r, i) => ({
+        rank: i + 1, avatar: r.avatar, display: r.display, streak: r.streak, isMe: r.email === email
+      }));
+      const myIndex = ranked.findIndex(r => r.email === email);
+      const myRank = myIndex === -1 ? null : myIndex + 1;
+      const myStreak = myIndex === -1 ? 0 : ranked[myIndex].streak;
+
+      return json({ ok:true, schoolName: me.schoolName, myRank, myStreak, list }, cors);
     }
 
     if (url.pathname === "/debug") {

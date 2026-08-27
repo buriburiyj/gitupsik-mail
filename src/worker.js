@@ -327,11 +327,7 @@ async function getSessionEmail(request, env) {
 
 // D1의 checkins 기록으로 연속 완료일(스트릭)을 계산.
 // 오늘 체크인이 없으면 어제부터 세기 시작하고, 하루라도 끊기면 그 자리에서 멈춘다.
-async function calcStreakFromD1(email, env) {
-  const { results } = await env.DB.prepare(
-    "SELECT date FROM checkins WHERE email = ? ORDER BY date DESC LIMIT 400"
-  ).bind(email).all();
-  const dates = new Set(results.map(r => r.date));
+function streakFromDates(dates) {
   if (dates.size === 0) return 0;
 
   const cursor = kstNow();
@@ -345,6 +341,21 @@ async function calcStreakFromD1(email, env) {
     cursor.setUTCDate(cursor.getUTCDate() - 1);
   }
   return streak;
+}
+
+async function calcStreakFromD1(email, env) {
+  const { results } = await env.DB.prepare(
+    "SELECT date FROM checkins WHERE email = ? ORDER BY date DESC LIMIT 400"
+  ).bind(email).all();
+  return streakFromDates(new Set(results.map(r => r.date)));
+}
+
+// 랭킹용 조회 범위. 스트릭이 이 값을 넘으면 여기서 잘린다.
+const RANK_WINDOW_DAYS = 90;
+function rankWindowStart() {
+  const d = kstNow();
+  d.setUTCDate(d.getUTCDate() - RANK_WINDOW_DAYS);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
 }
 
 // 이메일 하나당 항상 같은 이모지가 나오도록 하는 간단한 고정 해시.
@@ -746,9 +757,24 @@ export default {
         "SELECT email, grade, classNm, nickname FROM users WHERE officeCode = ? AND schoolCode = ? LIMIT 500"
       ).bind(me.officeCode, me.schoolCode).all();
 
+      // 사용자마다 쿼리를 던지면 학교 규모만큼 D1 왕복이 늘어난다.
+      // 학교 전체 체크인을 한 번에 받아 이메일별로 묶는다.
+      const { results: rows } = await env.DB.prepare(
+        `SELECT c.email, c.date FROM checkins c
+         JOIN users u ON u.email = c.email
+         WHERE u.officeCode = ? AND u.schoolCode = ? AND c.date >= ?`
+      ).bind(me.officeCode, me.schoolCode, rankWindowStart()).all();
+
+      const byEmail = new Map();
+      for (const r of rows) {
+        let set = byEmail.get(r.email);
+        if (!set) { set = new Set(); byEmail.set(r.email, set); }
+        set.add(r.date);
+      }
+
       const ranked = [];
       for (const u of results) {
-        const streak = await calcStreakFromD1(u.email, env);
+        const streak = streakFromDates(byEmail.get(u.email) || new Set());
         if (streak > 0) {
           ranked.push({
             email: u.email,

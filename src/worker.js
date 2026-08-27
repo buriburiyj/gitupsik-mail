@@ -325,7 +325,7 @@ async function getSessionEmail(request, env) {
   try { return JSON.parse(data).email; } catch (e) { return null; }
 }
 
-// D1의 checkins 기록으로 연속 완료일(스트릭)을 계산.
+// 날짜 Set에서 연속 완료일(스트릭)을 계산.
 // 오늘 체크인이 없으면 어제부터 세기 시작하고, 하루라도 끊기면 그 자리에서 멈춘다.
 function streakFromDates(dates) {
   if (dates.size === 0) return 0;

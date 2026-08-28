@@ -743,6 +743,25 @@ export default {
       return json({ ok:true, streak }, cors);
     }
 
+    // 앱에서 학교나 학년/반을 바꿨을 때 서버 프로필을 맞춘다.
+    // 이게 없으면 D1은 구독 시점 값에 묶여 랭킹이 엉뚱한 학교로 나간다.
+    if (url.pathname === "/profile" && request.method === "POST") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
+
+      const body = await request.json().catch(() => null);
+      if (!body) return json({ ok:false, msg:"요청 형식이 올바르지 않아." }, cors);
+
+      const { officeCode, schoolCode, schoolName, grade, classNm } = body;
+      if (!officeCode || !schoolCode) return json({ ok:false, msg:"학교 정보가 필요해." }, cors);
+
+      await upsertUserProfile(env, {
+        email, officeCode, schoolCode, schoolName,
+        grade: grade || null, classNm: classNm || null
+      });
+      return json({ ok:true }, cors);
+    }
+
     // 같은 학교 사용자들의 스트릭 랭킹. 이메일 원문/개인정보는 응답에 절대 포함하지 않는다.
     if (url.pathname === "/ranking") {
       const email = await getSessionEmail(request, env);

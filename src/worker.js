@@ -343,6 +343,18 @@ function streakFromDates(dates) {
   return streak;
 }
 
+// 기록 전체에서 가장 길었던 연속 구간. 현재 스트릭과 달리 과거까지 훑는다.
+function bestStreakFromDates(dates) {
+  let best = 0, run = 0, prev = null;
+  for (const d of [...dates].sort()) {
+    const cur = Date.parse(d + 'T00:00:00Z');
+    run = (prev !== null && cur - prev === 86400000) ? run + 1 : 1;
+    if (run > best) best = run;
+    prev = cur;
+  }
+  return best;
+}
+
 async function calcStreakFromD1(email, env) {
   const { results } = await env.DB.prepare(
     "SELECT date FROM checkins WHERE email = ? ORDER BY date DESC LIMIT 400"
@@ -741,6 +753,24 @@ export default {
       if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);
       const streak = await calcStreakFromD1(email, env);
       return json({ ok:true, streak }, cors);
+    }
+
+    // 개인 기록 카드용. 체크인 날짜 원본과 요약 수치를 함께 준다.
+    if (url.pathname === "/history") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해!" }, cors);
+
+      const { results } = await env.DB.prepare(
+        "SELECT date FROM checkins WHERE email = ? ORDER BY date DESC LIMIT 400"
+      ).bind(email).all();
+      const dates = results.map(r => r.date);
+      const set = new Set(dates);
+      return json({
+        ok: true, dates,
+        streak: streakFromDates(set),
+        best: bestStreakFromDates(set),
+        total: set.size
+      }, cors);
     }
 
     // 앱에서 학교나 학년/반을 바꿨을 때 서버 프로필을 맞춘다.

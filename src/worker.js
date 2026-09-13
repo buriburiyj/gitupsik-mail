@@ -934,6 +934,48 @@ export default {
       } catch (e) { return json({ ok:false, msg:"오류: "+e.message }, cors); }
     }
 
+    // ===== 학습 기록 서버 통합 =====
+    // localStorage가 날아가도 기록이 남게 계정별 JSON을 보관한다.
+    // 인증은 기존 엔드포인트와 동일하게 세션 토큰만 신뢰한다(?email= 무시).
+    if (url.pathname === "/studylog" && request.method === "GET") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해!" }, cors);
+      try {
+        const row = await env.DB.prepare(
+          "SELECT data, updated_at FROM study_log WHERE email = ?"
+        ).bind(email).first();
+        if (!row) return json({ ok:true, log:null, updatedAt:0 }, cors);
+        return json({ ok:true, log: JSON.parse(row.data), updatedAt: row.updated_at }, cors);
+      } catch (e) {
+        return json({ ok:false, msg:"기록을 불러오지 못했어." }, cors);
+      }
+    }
+
+    if (url.pathname === "/studylog" && request.method === "POST") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false, msg:"로그인이 필요해!" }, cors);
+      try {
+        const body = await request.json();
+        const log = body && body.log;
+        // 형식이 아닌 값을 그대로 저장하면 다음 로드에서 앱이 깨진다.
+        if (!log || typeof log !== "object" || Array.isArray(log)) {
+          return json({ ok:false, msg:"형식이 올바르지 않아." }, cors);
+        }
+        const data = JSON.stringify(log);
+        if (data.length > 200000) {
+          return json({ ok:false, msg:"기록이 너무 커서 저장할 수 없어." }, cors);
+        }
+        const now = Date.now();
+        await env.DB.prepare(
+          "INSERT INTO study_log (email, data, updated_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT(email) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at"
+        ).bind(email, data, now).run();
+        return json({ ok:true, updatedAt: now }, cors);
+      } catch (e) {
+        return json({ ok:false, msg:"기록을 저장하지 못했어." }, cors);
+      }
+    }
+
     if (url.pathname === "/getacademy") {
       const email = await getSessionEmail(request, env);
       if (!email) return json({ ok:false, msg:"로그인이 필요해! 위에서 로그인 링크를 받아줘." }, cors);

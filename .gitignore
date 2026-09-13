@@ -7,3 +7,6 @@ node_modules/
 .wrangler/
 *.log
 .DS_Store
+
+# 로컬 백업 파일
+*.bak*

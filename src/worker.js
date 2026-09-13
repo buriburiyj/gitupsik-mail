@@ -54,8 +54,76 @@ function htmlWrap(inner) {
 }
 
 // ===== 급식 =====
-async function getMeal(officeCode, schoolCode, env) {
-  const url = `${NEIS_BASE}/mealServiceDietInfo?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&MLSV_YMD=${todayStr()}`;
+// ===== 달력용: 한 달치 학사일정 =====
+const GRADE_YN = { "1":"ONE_GRADE_EVENT_YN", "2":"TW_GRADE_EVENT_YN", "3":"THREE_GRADE_EVENT_YN",
+                   "4":"FR_GRADE_EVENT_YN", "5":"FIV_GRADE_EVENT_YN", "6":"SIX_GRADE_EVENT_YN" };
+
+async function getSchedules(officeCode, schoolCode, env, from, to, grade) {
+  const url = `${NEIS_BASE}/SchoolSchedule?KEY=${env.NEIS_KEY}&Type=json&pSize=500` +
+    `&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}` +
+    `&AA_FROM_YMD=${from}&AA_TO_YMD=${to}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const rows = data.SchoolSchedule?.[1]?.row;
+    if (!rows) return [];
+    const key = GRADE_YN[String(grade)];
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      // 학년이 지정되면 그 학년 일정만 남긴다.
+      if (key && r[key] === "N") continue;
+      const name = (r.EVENT_NM || "").trim();
+      if (!name) continue;
+      const dedup = r.AA_YMD + "|" + name;
+      if (seen.has(dedup)) continue;
+      seen.add(dedup);
+      out.push({ date: r.AA_YMD, name, kind: r.SBTR_DD_SC_NM || null });
+    }
+    out.sort((a, b) => a.date.localeCompare(b.date));
+    return out;
+  } catch (e) { return []; }
+}
+
+// ===== 달력용: 한 달치 급식 (날짜별 메뉴만, 응답 크기를 줄인다) =====
+async function getMealRange(officeCode, schoolCode, env, from, to) {
+  const url = `${NEIS_BASE}/mealServiceDietInfo?KEY=${env.NEIS_KEY}&Type=json&pSize=500` +
+    `&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}` +
+    `&MLSV_FROM_YMD=${from}&MLSV_TO_YMD=${to}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    const rows = data.mealServiceDietInfo?.[1]?.row;
+    if (!rows) return {};
+    const map = {};
+    for (const m of rows) {
+      const menu = (m.DDISH_NM || "").replace(/<br\/?>/g, "<br>").replace(/\([0-9.]+\)/g, "").trim();
+      if (!menu) continue;
+      map[m.MLSV_YMD] = map[m.MLSV_YMD] ? map[m.MLSV_YMD] + "<br><br>" + menu : menu;
+    }
+    return map;
+  } catch (e) { return {}; }
+}
+
+// YYYYMM -> 그 달의 1일/말일
+function monthRange(ym) {
+  if (!/^\d{6}$/.test(ym)) return null;
+  const y = +ym.slice(0, 4), m = +ym.slice(4, 6);
+  if (y < 2000 || y > 2100 || m < 1 || m > 12) return null;
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { from: `${ym}01`, to: `${ym}${String(last).padStart(2, "0")}` };
+}
+
+// 사용자 입력 날짜는 반드시 검증해서 NEIS URL에 넣는다. 형식이 틀리면 null(=오늘).
+function safeDate(v) {
+  if (!v || !/^\d{8}$/.test(v)) return null;
+  const y = +v.slice(0, 4), m = +v.slice(4, 6), d = +v.slice(6, 8);
+  if (y < 2000 || y > 2100 || m < 1 || m > 12 || d < 1 || d > 31) return null;
+  return v;
+}
+
+async function getMeal(officeCode, schoolCode, env, date) {
+  const url = `${NEIS_BASE}/mealServiceDietInfo?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&MLSV_YMD=${date || todayStr()}`;
   try {
     const res = await fetch(url);
     const data = await res.json();
@@ -69,17 +137,23 @@ async function getMeal(officeCode, schoolCode, env) {
 }
 
 // ===== 시간표 (학년·반 지정) =====
-async function getTimetable(officeCode, schoolCode, grade, classNm, env) {
+async function getTimetable(officeCode, schoolCode, grade, classNm, env, date) {
   const endpoints = ['elsTimetable', 'misTimetable', 'hisTimetable'];
   for (const ep of endpoints) {
-    let url = `${NEIS_BASE}/${ep}?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&ALL_TI_YMD=${todayStr()}`;
+    let url = `${NEIS_BASE}/${ep}?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&ALL_TI_YMD=${date || todayStr()}`;
     if (grade) url += `&GRADE=${grade}`;
     if (classNm) url += `&CLASS_NM=${classNm}`;
     try {
       const res = await fetch(url);
       const data = await res.json();
       const rows = data[ep]?.[1]?.row;
-      if (rows) return rows.map(t => `${t.PERIO}교시 · ${t.ITRT_CNTNT}`).join('<br>');
+      if (rows) {
+        // NEIS가 교시만 주고 과목명을 null로 보내는 날(주말·휴일)이 있다.
+        const valid = rows.filter(t => t.ITRT_CNTNT && String(t.ITRT_CNTNT).trim() && String(t.ITRT_CNTNT) !== "null");
+        if (!valid.length) return null;
+        valid.sort((a, b) => (+a.PERIO) - (+b.PERIO));
+        return valid.map(t => `${t.PERIO}교시 · ${t.ITRT_CNTNT}`).join('<br>');
+      }
     } catch (e) {}
   }
   return null;
@@ -187,7 +261,7 @@ function buildDdayHtml(ddays) {
 }
 
 // ===== HTML 메일 =====
-function buildHtml(sub, weather, air, meal, timetable, cheer) {
+function buildHtml(sub, weather, air, meal, timetable, cheer, rank) {
   const card = (title, inner) =>
     `<div style="background:#fff;border-radius:16px;padding:18px;margin-bottom:12px">` +
     `<div style="font-weight:800;color:#4f46e5;font-size:15px;margin-bottom:8px">${title}</div>` +
@@ -232,6 +306,34 @@ function buildHtml(sub, weather, air, meal, timetable, cheer) {
   const ddayInner = buildDdayHtml(sub.ddays);
 
 
+    let rankInner = "";
+
+
+    if (rank) {
+
+
+      if (rank.myRank) {
+
+
+        rankInner = `<div style="text-align:center"><span style="font-size:26px;font-weight:800;color:#1e293b">${rank.myRank}등</span> <span style="color:#f97316;font-weight:700">\u{1F525}${rank.myStreak}일</span></div>`;
+
+
+        if (rank.top && !rank.isTopMe) rankInner += `<div style="text-align:center;color:#64748b;font-size:13px;margin-top:6px">1등 ${rank.top.display} \u{1F525}${rank.top.streak}일</div>`;
+
+
+      } else {
+
+
+        rankInner = "오늘 학습을 체크하면 랭킹에 올라가요!";
+
+
+      }
+
+
+    }
+
+
+
     return `<div style="background:#f1f5f9;padding:22px 14px;font-family:-apple-system,'Apple SD Gothic Neo',sans-serif;max-width:480px;margin:0 auto">` +
     `<div style="text-align:center;margin-bottom:16px">` +
     `<div style="font-size:24px;font-weight:800;color:#1e293b">🌅 오늘의 아침 브리핑</div>` +
@@ -242,13 +344,14 @@ function buildHtml(sub, weather, air, meal, timetable, cheer) {
     card("📅 오늘 시간표", timetable || "시간표 정보가 없어요.") +
     (academyInner ? card("🎒 오늘 학원", academyInner) : "") +
     (ddayInner ? card("🎯 디데이", ddayInner) : "") +
+    (rankInner ? card("🏆 우리 학교 랭킹", rankInner) : "") +
 
     `<div style="text-align:center;background:#4f46e5;color:#fff;border-radius:16px;padding:16px;font-size:15px;font-weight:600">💬 ${cheer}</div>` +
     `<div style="text-align:center;margin-top:14px"><a href="${FRONTEND_URL}" style="display:inline-block;padding:13px 28px;background:#fff;color:#4f46e5;text-decoration:none;border-radius:12px;font-weight:800;font-size:15px;border:2px solid #4f46e5">🍚 오늘급식 앱 열기</a></div>` +
     `<div style="text-align:center;color:#94a3b8;font-size:11px;margin-top:14px">오늘급식 · <a href="${unsubUrl}" style="color:#94a3b8">구독 취소</a></div></div>`;
 }
 // ===== 한 명에게 보내기 =====
-async function sendOne(sub, env) {
+async function sendOne(sub, env, cache) {
   const [weather, air, meal, timetable] = await Promise.all([
     getWeather(sub.lat, sub.lon),
     getAir(sub.lat, sub.lon),
@@ -256,7 +359,8 @@ async function sendOne(sub, env) {
     getTimetable(sub.officeCode, sub.schoolCode, sub.grade, sub.classNm, env)
   ]);
   const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
-  const html = buildHtml(sub, weather, air, meal, timetable, cheer);
+  const rank = await rankInfoFor(env, sub, cache);
+  const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
@@ -271,6 +375,7 @@ async function sendOne(sub, env) {
 }
 
 async function sendMailToAll(env) {
+  const rankCache = new Map();
   const list = await env.SUBS.list();
   for (const key of list.keys) {
     const data = await env.SUBS.get(key.name);
@@ -278,7 +383,7 @@ async function sendMailToAll(env) {
     try {
       const sub = JSON.parse(data);
       if (!sub.verified) continue;
-      await sendOne(sub, env);
+      await sendOne(sub, env, rankCache);
     } catch (e) {}
   }
 }
@@ -364,6 +469,57 @@ async function calcStreakFromD1(email, env) {
 
 // 랭킹용 조회 범위. 스트릭이 이 값을 넘으면 여기서 잘린다.
 const RANK_WINDOW_DAYS = 90;
+// 메일 카드용: 내 순위/최고 기록. 실패해도 메일 발송을 막지 않는다.
+async function rankInfoFor(env, sub, cache) {
+  try {
+    if (!sub.officeCode || !sub.schoolCode) return null;
+    const ranked = await getSchoolRank(env, sub.officeCode, sub.schoolCode, cache);
+    const idx = ranked.findIndex(r => r.email === sub.email);
+    return {
+      myRank: idx === -1 ? null : idx + 1,
+      myStreak: idx === -1 ? 0 : ranked[idx].streak,
+      top: ranked[0] || null,
+      isTopMe: idx === 0,
+      total: ranked.length
+    };
+  } catch (e) { return null; }
+}
+
+// 메일용: 학교 랭킹을 한 번에 계산. 학교별로 캐시해서 D1 왕복을 줄인다.
+async function getSchoolRank(env, officeCode, schoolCode, cache) {
+  const key = officeCode + "|" + schoolCode;
+  if (cache && cache.has(key)) return cache.get(key);
+  const { results } = await env.DB.prepare(
+    "SELECT email, grade, classNm, nickname FROM users WHERE officeCode = ? AND schoolCode = ? LIMIT 500"
+  ).bind(officeCode, schoolCode).all();
+  const { results: rows } = await env.DB.prepare(
+    `SELECT c.email, c.date FROM checkins c
+     JOIN users u ON u.email = c.email
+     WHERE u.officeCode = ? AND u.schoolCode = ? AND c.date >= ?`
+  ).bind(officeCode, schoolCode, rankWindowStart()).all();
+
+  const byEmail = new Map();
+  for (const r of rows) {
+    let set = byEmail.get(r.email);
+    if (!set) { set = new Set(); byEmail.set(r.email, set); }
+    set.add(r.date);
+  }
+  const ranked = [];
+  for (const u of results) {
+    const streak = streakFromDates(byEmail.get(u.email) || new Set());
+    if (streak > 0) {
+      ranked.push({
+        email: u.email,
+        display: u.nickname || `${u.grade || "?"}학년 ${u.classNm || "?"}반`,
+        streak
+      });
+    }
+  }
+  ranked.sort((a, b) => b.streak - a.streak);
+  if (cache) cache.set(key, ranked);
+  return ranked;
+}
+
 function rankWindowStart() {
   const d = kstNow();
   d.setUTCDate(d.getUTCDate() - RANK_WINDOW_DAYS);
@@ -381,14 +537,15 @@ function avatarForEmail(email) {
 
 // 인증된 사용자의 학교/학년/반 정보를 D1 users 테이블에 동기화 (랭킹 조회용).
 // KV(SUBS)가 원본이고, 이건 랭킹을 학교별로 그룹핑하기 위한 파생 데이터일 뿐이다.
-async function upsertUserProfile(env, { email, officeCode, schoolCode, schoolName, grade, classNm }) {
+async function upsertUserProfile(env, { email, officeCode, schoolCode, schoolName, grade, classNm, nickname }) {
   await env.DB.prepare(
-    `INSERT INTO users (email, officeCode, schoolCode, schoolName, grade, classNm, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO users (email, officeCode, schoolCode, schoolName, grade, classNm, nickname, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(email) DO UPDATE SET
        officeCode=excluded.officeCode, schoolCode=excluded.schoolCode, schoolName=excluded.schoolName,
-       grade=excluded.grade, classNm=excluded.classNm, updated_at=excluded.updated_at`
-  ).bind(email, officeCode, schoolCode, schoolName, grade, classNm, Date.now()).run();
+       grade=excluded.grade, classNm=excluded.classNm,
+       nickname=COALESCE(excluded.nickname, users.nickname), updated_at=excluded.updated_at`
+  ).bind(email, officeCode, schoolCode, schoolName, grade, classNm, nickname ?? null, Date.now()).run();
 }
 
 export default {
@@ -423,7 +580,7 @@ export default {
       const office = url.searchParams.get("office");
       const school = url.searchParams.get("school");
       if (!office || !school) return json({ ok:false, msg:"학교 정보가 필요해." }, cors);
-      const meal = await getMeal(office, school, env);
+      const meal = await getMeal(office, school, env, safeDate(url.searchParams.get("date")));
       return json({ ok:true, meal }, cors);
     }
 
@@ -433,8 +590,23 @@ export default {
       const grade = url.searchParams.get("grade");
       const classNm = url.searchParams.get("class");
       if (!office || !school) return json({ ok:false, msg:"학교 정보가 필요해." }, cors);
-      const timetable = await getTimetable(office, school, grade, classNm, env);
+      const timetable = await getTimetable(office, school, grade, classNm, env, safeDate(url.searchParams.get("date")));
       return json({ ok:true, timetable }, cors);
+    }
+
+    // 달력 한 달치: 학사일정 + 급식이 있는 날
+    if (url.pathname === "/api/calendar") {
+      const office = url.searchParams.get("office");
+      const school = url.searchParams.get("school");
+      const grade = url.searchParams.get("grade");
+      const range = monthRange(url.searchParams.get("month") || "");
+      if (!office || !school) return json({ ok:false, msg:"학교 정보가 필요해." }, cors);
+      if (!range) return json({ ok:false, msg:"month는 YYYYMM 형식이어야 해." }, cors);
+      const [schedules, meals] = await Promise.all([
+        getSchedules(office, school, env, range.from, range.to, grade),
+        getMealRange(office, school, env, range.from, range.to)
+      ]);
+      return json({ ok:true, month: url.searchParams.get("month"), schedules, mealDays: Object.keys(meals).sort() }, cors);
     }
 
     // ===== 어드민 로그인 화면 =====
@@ -554,7 +726,7 @@ export default {
       if (pw !== env.ADMIN_PW) return new Response("권한 없음", { status: 401 });
       const data = await env.SUBS.get(email);
       if (!data) return new Response("그 구독자를 못 찾았어.");
-      try { await sendOne(JSON.parse(data)); return new Response(email+" 에게 메일 보냈어!"); }
+      try { await sendOne(JSON.parse(data), env); return new Response(email+" 에게 메일 보냈어!"); }
       catch (e) { return new Response("실패: "+e.message); }
     }
 
@@ -782,12 +954,13 @@ export default {
       const body = await request.json().catch(() => null);
       if (!body) return json({ ok:false, msg:"요청 형식이 올바르지 않아." }, cors);
 
-      const { officeCode, schoolCode, schoolName, grade, classNm } = body;
+      const { officeCode, schoolCode, schoolName, grade, classNm, nickname } = body;
       if (!officeCode || !schoolCode) return json({ ok:false, msg:"학교 정보가 필요해." }, cors);
 
       await upsertUserProfile(env, {
         email, officeCode, schoolCode, schoolName,
-        grade: grade || null, classNm: classNm || null
+        grade: grade || null, classNm: classNm || null,
+        nickname: (nickname || "").trim().slice(0, 12) || null
       });
       return json({ ok:true }, cors);
     }
@@ -872,7 +1045,8 @@ export default {
           getMeal(sub.officeCode, sub.schoolCode, env), getTimetable(sub.officeCode, sub.schoolCode, sub.grade, sub.classNm, env)
         ]);
         const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
-        const html = buildHtml(sub, weather, air, meal, timetable, cheer);
+        const rank = await rankInfoFor(env, sub);
+        const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
         await fetch("https://api.resend.com/emails", {
           method: "POST",
           headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },

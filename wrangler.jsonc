@@ -1,40 +1,44 @@
 {
-  "name": "gitupsik-mail",
-  "main": "src/worker.js",
-  "workers_dev": true,
-  "preview_urls": false,
-  "compatibility_date": "2026-07-04",
-  "triggers": {
-    "crons": [
-      "0 22 * * *"
-    ]
-  },
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 1,
-    "logs": {
-      "enabled": true,
-      "head_sampling_rate": 1,
-      "persist": true,
-      "invocation_logs": true
-    },
-    "traces": {
-      "enabled": false,
-      "persist": true,
-      "head_sampling_rate": 1
-    }
-  },
-  "kv_namespaces": [
-    {
-      "id": "9ecb3f164a1e499c83fc6be85fdaef71",
-      "binding": "SUBS"
-    }
-  ],
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "gitupsik-mail-db",
-      "database_id": "ee6f8d7c-159f-4f6a-8148-d4b3f09e7102"
-    }
-  ]
+	"name": "gitupsik-mail",
+	"main": "src/worker.js",
+	"workers_dev": true,
+	"preview_urls": false,
+	"compatibility_date": "2026-07-04",
+	"triggers": {
+		"crons": [
+			"0 22 * * *"
+		]
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+		"logs": {
+			"enabled": true,
+			"head_sampling_rate": 1,
+			"persist": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": false,
+			"persist": true,
+			"head_sampling_rate": 1
+		}
+	},
+	"kv_namespaces": [
+		{
+			"id": "9ecb3f164a1e499c83fc6be85fdaef71",
+			"binding": "SUBS"
+		},
+		{
+			"binding": "NEIS_CACHE",
+			"id": "f5f915f532a242bfacdab64bb939bf4e"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "gitupsik-mail-db",
+			"database_id": "ee6f8d7c-159f-4f6a-8148-d4b3f09e7102"
+		}
+	]
 }

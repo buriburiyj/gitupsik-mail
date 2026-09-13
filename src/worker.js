@@ -3,6 +3,67 @@
 //  Cloudflare Worker의 "Variables and secrets"(wrangler secret put)에 등록해서 씀.
 // ===================================================================
 const NEIS_BASE = "https://open.neis.go.kr/hub";
+
+// ===== NEIS 응답 캐시 (KV: NEIS_CACHE) =====
+// 키에 버전을 박아둬서, 파싱 형식이 바뀌면 CACHE_VER만 올려 전체 무효화한다.
+const CACHE_VER = "v1";
+
+// 지난 날짜 데이터는 더 안 바뀌니 길게, 오늘·미래는 학교가 수정할 수 있어 짧게.
+function ttlForDate(ymd) {
+  const t = todayStr();
+  if (!ymd) return 60 * 60 * 2;
+  if (ymd < t) return 60 * 60 * 24 * 30;
+  if (ymd === t) return 60 * 60 * 2;
+  return 60 * 60 * 4;
+}
+
+// 주말·미등록·NEIS 일시장애로 빈 값이 온 걸 오래 붙잡지 않는다.
+function isEmptyResult(v) {
+  if (v == null) return true;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === "object") return Object.keys(v).length === 0;
+  return String(v).trim() === "";
+}
+
+async function neisCached(env, key, ttl, fn) {
+  const kv = env && env.NEIS_CACHE;
+  if (!kv) return fn();  // 바인딩이 없어도 기능은 그대로 동작
+  const full = `neis:${CACHE_VER}:${key}`;
+  try {
+    const hit = await kv.get(full);
+    if (hit !== null) return JSON.parse(hit).v;
+  } catch (e) {}
+  const val = await fn();
+  try {
+    await kv.put(full, JSON.stringify({ v: val }), {
+      expirationTtl: isEmptyResult(val) ? 600 : ttl
+    });
+  } catch (e) {}
+  return val;
+}
+
+// 아래 네 개는 기존 함수와 시그니처가 같다. 호출부는 그대로 두고 캐시만 끼운다.
+async function getSchedules(officeCode, schoolCode, env, from, to, grade) {
+  return neisCached(env, `sched:${officeCode}:${schoolCode}:${from}:${to}:${grade || "all"}`,
+    60 * 60 * 24, () => getSchedulesRaw(officeCode, schoolCode, env, from, to, grade));
+}
+
+async function getMealRange(officeCode, schoolCode, env, from, to) {
+  return neisCached(env, `mealrange:${officeCode}:${schoolCode}:${from}:${to}`,
+    ttlForDate(to), () => getMealRangeRaw(officeCode, schoolCode, env, from, to));
+}
+
+async function getMeal(officeCode, schoolCode, env, date) {
+  const d = date || todayStr();
+  return neisCached(env, `meal:${officeCode}:${schoolCode}:${d}`,
+    ttlForDate(d), () => getMealRaw(officeCode, schoolCode, env, d));
+}
+
+async function getTimetable(officeCode, schoolCode, grade, classNm, env, date) {
+  const d = date || todayStr();
+  return neisCached(env, `tt:${officeCode}:${schoolCode}:${grade || "-"}:${classNm || "-"}:${d}`,
+    ttlForDate(d), () => getTimetableRaw(officeCode, schoolCode, grade, classNm, env, d));
+}
 const WORKER_URL = "https://gitupsik-mail.buriburiyejun.workers.dev";
 const FRONTEND_URL = "https://today-meal.buriburiyejun.workers.dev";
 const LOGIN_TOKEN_TTL = 600;    // 로그인 링크 토큰: 10분
@@ -58,7 +119,7 @@ function htmlWrap(inner) {
 const GRADE_YN = { "1":"ONE_GRADE_EVENT_YN", "2":"TW_GRADE_EVENT_YN", "3":"THREE_GRADE_EVENT_YN",
                    "4":"FR_GRADE_EVENT_YN", "5":"FIV_GRADE_EVENT_YN", "6":"SIX_GRADE_EVENT_YN" };
 
-async function getSchedules(officeCode, schoolCode, env, from, to, grade) {
+async function getSchedulesRaw(officeCode, schoolCode, env, from, to, grade) {
   const url = `${NEIS_BASE}/SchoolSchedule?KEY=${env.NEIS_KEY}&Type=json&pSize=500` +
     `&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}` +
     `&AA_FROM_YMD=${from}&AA_TO_YMD=${to}`;
@@ -86,7 +147,7 @@ async function getSchedules(officeCode, schoolCode, env, from, to, grade) {
 }
 
 // ===== 달력용: 한 달치 급식 (날짜별 메뉴만, 응답 크기를 줄인다) =====
-async function getMealRange(officeCode, schoolCode, env, from, to) {
+async function getMealRangeRaw(officeCode, schoolCode, env, from, to) {
   const url = `${NEIS_BASE}/mealServiceDietInfo?KEY=${env.NEIS_KEY}&Type=json&pSize=500` +
     `&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}` +
     `&MLSV_FROM_YMD=${from}&MLSV_TO_YMD=${to}`;
@@ -122,7 +183,7 @@ function safeDate(v) {
   return v;
 }
 
-async function getMeal(officeCode, schoolCode, env, date) {
+async function getMealRaw(officeCode, schoolCode, env, date) {
   const url = `${NEIS_BASE}/mealServiceDietInfo?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&MLSV_YMD=${date || todayStr()}`;
   try {
     const res = await fetch(url);
@@ -137,7 +198,7 @@ async function getMeal(officeCode, schoolCode, env, date) {
 }
 
 // ===== 시간표 (학년·반 지정) =====
-async function getTimetable(officeCode, schoolCode, grade, classNm, env, date) {
+async function getTimetableRaw(officeCode, schoolCode, grade, classNm, env, date) {
   const endpoints = ['elsTimetable', 'misTimetable', 'hisTimetable'];
   for (const ep of endpoints) {
     let url = `${NEIS_BASE}/${ep}?KEY=${env.NEIS_KEY}&Type=json&ATPT_OFCDC_SC_CODE=${officeCode}&SD_SCHUL_CODE=${schoolCode}&ALL_TI_YMD=${date || todayStr()}`;

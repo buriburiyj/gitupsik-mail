@@ -432,21 +432,55 @@ async function sendOne(sub, env, cache) {
       html
     })
   });
-  return await res.text();
+  const body = await res.text();
+  if (!res.ok) return { ok: false, detail: `HTTP ${res.status} ${body}` };
+  return { ok: true, detail: body };
+}
+
+// 에러 본문에 요청 헤더가 그대로 섞여 나오는 경우가 있어, 저장 전에 토큰을 지우고 길이를 자른다.
+function safeDetail(v) {
+  if (v == null) return null;
+  return String(v)
+    .replace(/Bearer\s+[A-Za-z0-9._\-]+/g, "Bearer ***")
+    .replace(/re_[A-Za-z0-9._\-]{8,}/g, "re_***")
+    .slice(0, 300);
+}
+
+// 발송 결과를 한 번에 기록한다. 인원수만큼 개별 쓰기를 하면 D1 쓰기가 낭비된다.
+async function writeMailLog(env, rows) {
+  if (!rows.length || !env.DB) return;
+  const now = Date.now();
+  const date = kstDateStr();
+  try {
+    const stmt = env.DB.prepare(
+      "INSERT INTO mail_log (date, email, status, detail, created_at) VALUES (?, ?, ?, ?, ?)"
+    );
+    await env.DB.batch(rows.map(r =>
+      stmt.bind(date, r.email, r.ok ? "ok" : "fail", r.ok ? null : safeDetail(r.detail), now)
+    ));
+  } catch (e) { /* 로그 실패가 메일 발송을 막지 않게 한다 */ }
 }
 
 async function sendMailToAll(env) {
   const rankCache = new Map();
   const list = await env.SUBS.list();
+  const results = [];
   for (const key of list.keys) {
     const data = await env.SUBS.get(key.name);
     if (!data) continue;
+    let sub = null;
     try {
-      const sub = JSON.parse(data);
+      sub = JSON.parse(data);
       if (!sub.verified) continue;
-      await sendOne(sub, env, rankCache);
-    } catch (e) {}
+      const r = await sendOne(sub, env, rankCache);
+      results.push({ email: sub.email, ok: !!(r && r.ok), detail: r && r.detail });
+    } catch (e) {
+      // 예외를 삼키면 "메일이 안 왔다"를 추적할 수 없다.
+      results.push({ email: (sub && sub.email) || key.name, ok: false, detail: String(e && e.message || e) });
+    }
   }
+  await writeMailLog(env, results);
+  return results;
 }
 
 async function sendNoticeToAll(env, title, body) {
@@ -787,8 +821,37 @@ export default {
       if (pw !== env.ADMIN_PW) return new Response("권한 없음", { status: 401 });
       const data = await env.SUBS.get(email);
       if (!data) return new Response("그 구독자를 못 찾았어.");
-      try { await sendOne(JSON.parse(data), env); return new Response(email+" 에게 메일 보냈어!"); }
-      catch (e) { return new Response("실패: "+e.message); }
+      try {
+        const r = await sendOne(JSON.parse(data), env);
+        await writeMailLog(env, [{ email, ok: !!(r && r.ok), detail: r && r.detail }]);
+        if (r && r.ok) return new Response(email+" 에게 메일 보냈어!");
+        return new Response("실패: " + safeDetail(r && r.detail));
+      } catch (e) {
+        await writeMailLog(env, [{ email, ok:false, detail: String(e && e.message || e) }]);
+        return new Response("실패: "+e.message);
+      }
+    }
+
+    // 발송 결과 조회. "메일이 안 왔다"를 바로 확인하려고 만든 관리자 전용 엔드포인트.
+    if (url.pathname === "/admin_maillog" && request.method === "POST") {
+      const body = await request.json();
+      if (body.pw !== env.ADMIN_PW) return json({ ok:false, msg:"권한 없음" }, cors);
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date || "") ? body.date : kstDateStr();
+      try {
+        const res = await env.DB.prepare(
+          "SELECT email, status, detail, created_at FROM mail_log WHERE date = ? ORDER BY id DESC LIMIT 200"
+        ).bind(date).all();
+        const rows = res.results || [];
+        return json({
+          ok: true, date,
+          total: rows.length,
+          okCount: rows.filter(r => r.status === "ok").length,
+          failCount: rows.filter(r => r.status !== "ok").length,
+          rows
+        }, cors);
+      } catch (e) {
+        return json({ ok:false, msg:"로그를 불러오지 못했어." }, cors);
+      }
     }
 
     if (url.pathname === "/admin_del" && request.method === "POST") {

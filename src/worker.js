@@ -6,7 +6,7 @@ const NEIS_BASE = "https://open.neis.go.kr/hub";
 
 // ===== NEIS 응답 캐시 (KV: NEIS_CACHE) =====
 // 키에 버전을 박아둬서, 파싱 형식이 바뀌면 CACHE_VER만 올려 전체 무효화한다.
-const CACHE_VER = "v1";
+const CACHE_VER = "v2";
 
 // 지난 날짜 데이터는 더 안 바뀌니 길게, 오늘·미래는 학교가 수정할 수 있어 짧게.
 function ttlForDate(ymd) {
@@ -158,7 +158,7 @@ async function getMealRangeRaw(officeCode, schoolCode, env, from, to) {
     if (!rows) return {};
     const map = {};
     for (const m of rows) {
-      const menu = (m.DDISH_NM || "").replace(/<br\/?>/g, "<br>").replace(/\([0-9.]+\)/g, "").trim();
+      const menu = (m.DDISH_NM || "").replace(/<br\/?>/g, "<br>").trim();
       if (!menu) continue;
       map[m.MLSV_YMD] = map[m.MLSV_YMD] ? map[m.MLSV_YMD] + "<br><br>" + menu : menu;
     }
@@ -191,7 +191,7 @@ async function getMealRaw(officeCode, schoolCode, env, date) {
     const rows = data.mealServiceDietInfo?.[1]?.row;
     if (!rows) return null;
     return rows.map(m => {
-      const menu = m.DDISH_NM.replace(/<br\/?>/g, '<br>').replace(/\([0-9.]+\)/g, '').trim();
+      const menu = m.DDISH_NM.replace(/<br\/?>/g, '<br>').trim();
       return `<b>${m.MMEAL_SC_NM}</b><br>${menu}`;
     }).join('<br><br>');
   } catch (e) { return null; }

@@ -1,0 +1,24 @@
+{
+  "name": "gitupsik-mail",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buriburiyj/gitupsik-mail.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/buriburiyj/gitupsik-mail/issues"
+  },
+  "homepage": "https://github.com/buriburiyj/gitupsik-mail#readme",
+  "dependencies": {
+    "worker-mailer": "^1.2.1"
+  }
+}

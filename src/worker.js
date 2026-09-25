@@ -1,3 +1,27 @@
+import { WorkerMailer } from "worker-mailer";
+
+// Gmail SMTP 발송. Resend fetch와 같은 모양(ok/status/text/json)으로 응답
+async function mailFetch(env, init) {
+  const p = JSON.parse(init.body);
+  let mailer;
+  try {
+    mailer = await WorkerMailer.connect({
+      host: "smtp.gmail.com", port: 465, secure: true, authType: "plain",
+      credentials: { username: env.GMAIL_USER, password: env.GMAIL_APP_PW },
+    });
+    await mailer.send({
+      from: { name: "오늘급식", email: env.GMAIL_USER },
+      to: p.to, subject: p.subject, html: p.html, text: p.text,
+    });
+    return { ok: true, status: 200, text: async () => "sent via gmail", json: async () => ({ id: "gmail" }) };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    return { ok: false, status: 502, text: async () => msg, json: async () => ({ message: msg }) };
+  } finally {
+    try { if (mailer && mailer.close) await mailer.close(); } catch (_) {}
+  }
+}
+
 // ===================================================================
 //  설정: NEIS_KEY / RESEND_KEY / ADMIN_PW는 코드가 아니라
 //  Cloudflare Worker의 "Variables and secrets"(wrangler secret put)에 등록해서 씀.
@@ -422,7 +446,7 @@ async function sendOne(sub, env, cache) {
   const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
   const rank = await rankInfoFor(env, sub, cache);
   const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
-  const res = await fetch("https://api.resend.com/emails", {
+  const res = await mailFetch(env, {
     method: "POST",
     headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -499,7 +523,7 @@ async function sendNoticeToAll(env, title, body) {
     const sub = JSON.parse(data);
     if (!sub.verified) continue;
     try {
-      await fetch("https://api.resend.com/emails", {
+      await mailFetch(env, {
         method: "POST",
         headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: sub.email, subject: `📢 ${title}`, html })
@@ -902,7 +926,7 @@ export default {
               <p style="color:#94a3b8;font-size:12px;margin-top:18px">이 메일을 요청한 적이 없다면 무시하면 돼요.</p>
             </div>
           </div>`;
-        await fetch("https://api.resend.com/emails", {
+        await mailFetch(env, {
           method: "POST",
           headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: email, subject: "🍚 오늘급식 구독 확인 메일", html: vhtml })
@@ -958,7 +982,7 @@ export default {
                   <p style="color:#94a3b8;font-size:12px;margin-top:18px">이 로그인을 요청한 적이 없다면 무시하면 돼요.</p>
                 </div>
               </div>`;
-            const r = await fetch("https://api.resend.com/emails", {
+            const r = await mailFetch(env, {
               method: "POST",
               headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
               body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: email, subject: "🔑 오늘급식 로그인 링크", html })
@@ -1237,7 +1261,7 @@ export default {
         const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
         const rank = await rankInfoFor(env, sub);
         const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
-        await fetch("https://api.resend.com/emails", {
+        await mailFetch(env, {
           method: "POST",
           headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: sub.email, subject: `🌅 오늘의 아침 브리핑 (${dateKorean()})`, html })

@@ -932,6 +932,18 @@ export default {
       try {
         const { email } = await request.json();
         if (!email || !email.includes("@")) return json({ ok:false, msg:"이메일을 제대로 입력해줘!" }, cors);
+        const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+        const now = Date.now();
+        for (const [k, limit] of [[`login:e:${email.toLowerCase()}`, 3], [`login:ip:${ip}`, 30]]) {
+          const row = await env.DB.prepare(
+            "INSERT INTO rate_limit (k, n, reset_at) VALUES (?1, 1, ?2) " +
+            "ON CONFLICT(k) DO UPDATE SET " +
+            "n = CASE WHEN reset_at <= ?3 THEN 1 ELSE n + 1 END, " +
+            "reset_at = CASE WHEN reset_at <= ?3 THEN ?2 ELSE reset_at END " +
+            "RETURNING n"
+          ).bind(k, now + 600000, now).first();
+          if (row && row.n > limit) return json({ ok:false, msg:"요청이 너무 많아. 10분 뒤에 다시 시도해줘." }, cors);
+        }
 
         const existing = await env.SUBS.get(email);
         if (existing) {
@@ -949,11 +961,15 @@ export default {
                   <p style="color:#94a3b8;font-size:12px;margin-top:18px">이 로그인을 요청한 적이 없다면 무시하면 돼요.</p>
                 </div>
               </div>`;
-            await fetch("https://api.resend.com/emails", {
+            const r = await fetch("https://api.resend.com/emails", {
               method: "POST",
               headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
               body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: email, subject: "🔑 오늘급식 로그인 링크", html })
             });
+            if (!r.ok) {
+              console.log("login mail fail", r.status, (await r.text()).slice(0, 300));
+              return json({ ok:false, msg:"로그인 메일 발송에 실패했어. 잠시 후 다시 시도해줘." }, cors);
+            }
           }
         }
 

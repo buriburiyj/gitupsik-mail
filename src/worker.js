@@ -471,7 +471,7 @@ async function sendMailToAll(env) {
     let sub = null;
     try {
       sub = JSON.parse(data);
-      if (!sub.verified) continue;
+      if (!sub.verified || sub.subscribed === false) continue;
       const r = await sendOne(sub, env, rankCache);
       results.push({ email: sub.email, ok: !!(r && r.ok), detail: r && r.detail });
     } catch (e) {
@@ -880,7 +880,7 @@ export default {
         if (existing) {
           const old = JSON.parse(existing);
           if (old.verified) {
-            const updated = { ...old, officeCode, schoolCode, schoolName, lat, lon, grade, classNm, verified: true, academies: old.academies || [] };
+            const updated = { ...old, officeCode, schoolCode, schoolName, lat, lon, grade, classNm, verified: true, subscribed: true, academies: old.academies || [] };
             await env.SUBS.put(email, JSON.stringify(updated));
             await upsertUserProfile(env, updated);
             return json({ ok:true, msg:"이미 인증된 계정이라 정보만 업데이트했어! ✅" }, cors);
@@ -945,10 +945,7 @@ export default {
           if (row && row.n > limit) return json({ ok:false, msg:"요청이 너무 많아. 10분 뒤에 다시 시도해줘." }, cors);
         }
 
-        const existing = await env.SUBS.get(email);
-        if (existing) {
-          const sub = JSON.parse(existing);
-          if (sub.verified) {
+        // 가입 여부와 상관없이 발송 (링크 클릭 = 이메일 소유 인증)
             const loginToken = secureToken();
             await env.SUBS.put(`logintoken:${loginToken}`, JSON.stringify({ email }), { expirationTtl: LOGIN_TOKEN_TTL });
             const loginUrl = `${WORKER_URL}/login/verify?token=${loginToken}`;
@@ -970,10 +967,8 @@ export default {
               console.log("login mail fail", r.status, (await r.text()).slice(0, 300));
               return json({ ok:false, msg:"로그인 메일 발송에 실패했어. 잠시 후 다시 시도해줘." }, cors);
             }
-          }
-        }
 
-        return json({ ok:true, msg:"가입된 이메일이면 로그인 링크를 보냈어! 📩 메일함을 확인해줘 (10분 안에 유효)" }, cors);
+        return json({ ok:true, msg:"로그인 링크를 보냈어! 📩 메일함을 확인해줘 (10분 안에 유효)" }, cors);
       } catch (e) { return json({ ok:false, msg:"오류: "+e.message }, cors); }
     }
 
@@ -985,6 +980,19 @@ export default {
       }
       await env.SUBS.delete(`logintoken:${token}`);
       const { email } = JSON.parse(data);
+      {
+        const cur = await env.SUBS.get(email);
+        if (!cur) {
+          await env.SUBS.put(email, JSON.stringify({ email, verified: true, subscribed: false, academies: [] }));
+        } else {
+          const rec = JSON.parse(cur);
+          if (!rec.verified) {
+            rec.verified = true; delete rec.token;
+            await env.SUBS.put(email, JSON.stringify(rec));
+            if (rec.schoolCode) await upsertUserProfile(env, rec);
+          }
+        }
+      }
       const sessionToken = secureToken();
       await env.SUBS.put(`session:${sessionToken}`, JSON.stringify({ email }), { expirationTtl: SESSION_TTL });
       return Response.redirect(`${FRONTEND_URL}/#session=${sessionToken}`, 302);

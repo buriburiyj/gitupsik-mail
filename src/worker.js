@@ -521,15 +521,16 @@ async function sendNoticeToAll(env, title, body) {
     const data = await env.SUBS.get(key.name);
     if (!data) continue;
     const sub = JSON.parse(data);
-    if (!sub.verified) continue;
+    if (!sub.verified || sub.subscribed === false) continue;
     try {
-      await mailFetch(env, {
+      const r = await mailFetch(env, {
         method: "POST",
         headers: { "Authorization": `Bearer ${env.RESEND_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({ from: "오늘급식 <onboarding@resend.dev>", to: sub.email, subject: `📢 ${title}`, html })
       });
-      count++;
-    } catch (e) {}
+      if (r.ok) count++;
+      else console.log("notice fail", sub.email, (await r.text()).slice(0, 200));
+    } catch (e) { console.log("notice error", sub.email, String(e)); }
   }
   return count;
 }

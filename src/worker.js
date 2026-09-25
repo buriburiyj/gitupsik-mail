@@ -897,19 +897,24 @@ export default {
     if (url.pathname === "/subscribe" && request.method === "POST") {
       try {
         const body = await request.json();
+        if (body.email) body.email = String(body.email).trim().toLowerCase();
         const { email, officeCode, schoolCode, schoolName, lat, lon, grade, classNm } = body;
         if (!email || !email.includes("@")) return json({ ok:false, msg:"이메일을 제대로 입력해줘!" }, cors);
         if (!schoolCode) return json({ ok:false, msg:"학교를 먼저 선택해줘." }, cors);
+        const sessEmail = await getSessionEmail(request, env);
+        if (sessEmail && sessEmail === email) {
+          const prev = JSON.parse((await env.SUBS.get(email)) || "{}");
+          const rec = { ...prev, email, officeCode, schoolCode, schoolName, lat, lon, grade, classNm, verified: true, subscribed: true, academies: prev.academies || [] };
+          delete rec.token;
+          await env.SUBS.put(email, JSON.stringify(rec));
+          await upsertUserProfile(env, rec);
+          return json({ ok:true, msg:"구독 완료! 내일 아침 7시부터 메일이 가요 ✅" }, cors);
+        }
 
         const existing = await env.SUBS.get(email);
         if (existing) {
           const old = JSON.parse(existing);
-          if (old.verified) {
-            const updated = { ...old, officeCode, schoolCode, schoolName, lat, lon, grade, classNm, verified: true, subscribed: true, academies: old.academies || [] };
-            await env.SUBS.put(email, JSON.stringify(updated));
-            await upsertUserProfile(env, updated);
-            return json({ ok:true, msg:"이미 인증된 계정이라 정보만 업데이트했어! ✅" }, cors);
-          }
+          if (old.verified) return json({ ok:false, msg:"이미 가입된 이메일이야. 위에서 로그인한 다음 다시 눌러줘!" }, cors);
         }
 
         const token = makeToken();
@@ -953,9 +958,17 @@ export default {
     }
 
     // ===== 매직링크 로그인 =====
+    if (url.pathname === "/me") {
+      const email = await getSessionEmail(request, env);
+      if (!email) return json({ ok:false }, cors);
+      const raw = await env.SUBS.get(email);
+      const rec = raw ? JSON.parse(raw) : {};
+      return json({ ok:true, email, subscribed: !!rec.verified && rec.subscribed !== false && !!rec.schoolCode }, cors);
+    }
+
     if (url.pathname === "/login/request" && request.method === "POST") {
       try {
-        const { email } = await request.json();
+        const email = String((await request.json()).email || "").trim().toLowerCase();
         if (!email || !email.includes("@")) return json({ ok:false, msg:"이메일을 제대로 입력해줘!" }, cors);
         const ip = request.headers.get("CF-Connecting-IP") || "unknown";
         const now = Date.now();

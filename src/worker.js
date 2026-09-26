@@ -22,6 +22,14 @@ async function mailFetch(env, init) {
   }
 }
 
+// 새 로그인/구독 알림 (실패해도 사용자 동작에는 영향 없음)
+async function notifyAdmin(env, subject, text) {
+  try {
+    const r = await mailFetch(env, { body: JSON.stringify({ to: "buriburiyejun@gmail.com", subject, html: `<p style="font-size:15px">${text}</p>` }) });
+    if (!r.ok) console.log("notify fail", (await r.text()).slice(0, 200));
+  } catch (e) { console.log("notify error", String(e)); }
+}
+
 // ===================================================================
 //  설정: NEIS_KEY / RESEND_KEY / ADMIN_PW는 코드가 아니라
 //  Cloudflare Worker의 "Variables and secrets"(wrangler secret put)에 등록해서 씀.
@@ -908,6 +916,7 @@ export default {
           delete rec.token;
           await env.SUBS.put(email, JSON.stringify(rec));
           await upsertUserProfile(env, rec);
+          if (prev.subscribed !== true) ctx.waitUntil(notifyAdmin(env, "📬 오늘급식 새 구독", email + " / " + (schoolName || "") + " " + (grade || "") + "학년 " + (classNm || "") + "반"));
           return json({ ok:true, msg:"구독 완료! 내일 아침 7시부터 메일이 가요 ✅" }, cors);
         }
 
@@ -1022,6 +1031,7 @@ export default {
         const cur = await env.SUBS.get(email);
         if (!cur) {
           await env.SUBS.put(email, JSON.stringify({ email, verified: true, subscribed: false, academies: [] }));
+          ctx.waitUntil(notifyAdmin(env, "🆕 오늘급식 새 로그인", email));
         } else {
           const rec = JSON.parse(cur);
           if (!rec.verified) {

@@ -394,7 +394,7 @@ function buildHtml(sub, weather, air, meal, timetable, cheer, rank) {
     : "미세먼지 정보를 못 가져왔어요.";
 
   const academyInner = buildAcademyHtml(sub.academies);
-  const unsubUrl = `${WORKER_URL}/unsubscribe?email=${encodeURIComponent(sub.email)}`;
+  const unsubUrl = `${WORKER_URL}/unsubscribe?email=${encodeURIComponent(sub.email)}&t=${sub.unsubToken || ""}`;
   const gradeLabel = sub.grade ? ` · ${sub.grade}학년 ${sub.classNm}반` : "";
   const ddayInner = buildDdayHtml(sub.ddays);
 
@@ -453,6 +453,7 @@ async function sendOne(sub, env, cache) {
   ]);
   const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
   const rank = await rankInfoFor(env, sub, cache);
+  sub.unsubToken = await unsubToken(env, sub.email);
   const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
   const res = await mailFetch(env, {
     method: "POST",
@@ -549,6 +550,14 @@ function json(obj, cors, status = 200) {
 
 // 요청의 Authorization: Bearer <세션토큰> 헤더로 로그인한 사람의 email을 알아낸다.
 // 클라이언트가 보낸 email 파라미터는 신뢰하지 않고, 세션 토큰으로만 신원을 판단한다.
+// 구독 해지 링크용 토큰 (이메일 + UNSUB_SECRET 으로 HMAC)
+async function unsubToken(env, email) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(env.UNSUB_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", key, enc.encode(String(email).trim().toLowerCase()));
+  return [...new Uint8Array(sig)].slice(0, 16).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function getSessionEmail(request, env) {
   const auth = request.headers.get("Authorization") || "";
   const match = auth.match(/^Bearer (.+)$/);
@@ -1264,15 +1273,32 @@ export default {
     }
 
     if (url.pathname === "/unsubscribe") {
-      const email = url.searchParams.get("email");
-      if (email) {
-        await env.SUBS.delete(email);
-        return new Response("구독이 취소됐어요. 그동안 고마웠어요! 🙏", { headers:{ "Content-Type":"text/plain; charset=utf-8" } });
+      const page = (inner) => new Response(htmlWrap(inner), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      // 사이트에서 로그인한 상태로 해지
+      if (request.method === "POST" && request.headers.get("Authorization")) {
+        const se = await getSessionEmail(request, env);
+        if (!se) return json({ ok:false, msg:"로그인이 필요해. 다시 로그인해줘!" }, cors);
+        const raw = await env.SUBS.get(se);
+        if (raw) { const rec = JSON.parse(raw); rec.subscribed = false; await env.SUBS.put(se, JSON.stringify(rec)); }
+        return json({ ok:true, msg:"아침 메일 구독을 해지했어. 다시 받으려면 [구독하기]를 누르면 돼." }, cors);
       }
-      return new Response("이메일이 필요해요.", { headers:{ "Content-Type":"text/plain; charset=utf-8" } });
+      // 메일 속 링크로 해지 (토큰 확인)
+      const email = (url.searchParams.get("email") || "").trim().toLowerCase();
+      const t = url.searchParams.get("t") || "";
+      if (!email || !t || t !== await unsubToken(env, email)) {
+        return page('<h2>❌ 해지 링크가 올바르지 않아요</h2><p style="color:#475569;font-size:15px">오늘급식 사이트 → 설정 탭에서 로그인한 뒤 [구독 해지]를 눌러주세요.</p>');
+      }
+      const shown = email.replace(/[<>"&]/g, "");
+      if (request.method !== "POST") {
+        return page(`<h2>아침 메일을 그만 받을까요?</h2><p style="color:#475569;font-size:15px">${shown}</p><form method="POST"><button style="padding:12px 28px;border:0;border-radius:12px;background:#ef4444;color:#fff;font-size:16px;font-weight:800">구독 해지</button></form>`);
+      }
+      const raw = await env.SUBS.get(email);
+      if (raw) { const rec = JSON.parse(raw); rec.subscribed = false; await env.SUBS.put(email, JSON.stringify(rec)); }
+      return page('<h2>✅ 구독이 해지됐어요</h2><p style="color:#475569;font-size:15px">학원·디데이와 로그인 계정은 그대로 있어요.<br>다시 받으려면 사이트에서 [구독하기]를 누르면 돼요.</p>');
     }
 
     if (url.pathname === "/test") {
+      if (url.searchParams.get("pw") !== env.ADMIN_PW) return new Response("forbidden", { status: 403 });
       const email = url.searchParams.get("email");
       if (email) {
         const data = await env.SUBS.get(email);
@@ -1284,6 +1310,7 @@ export default {
         ]);
         const cheer = CHEERS[Math.floor(Math.random() * CHEERS.length)];
         const rank = await rankInfoFor(env, sub);
+        sub.unsubToken = await unsubToken(env, sub.email);
         const html = buildHtml(sub, weather, air, meal, timetable, cheer, rank);
         await mailFetch(env, {
           method: "POST",
